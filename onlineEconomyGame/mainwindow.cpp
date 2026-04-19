@@ -1,15 +1,24 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 
+#include<QHostAddress>
+#include<QMessageBox>
+#include<QDebug>
+#include<QJsonArray>
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
 
-    QPixmap im1();
+    connect(socket, &QTcpSocket::connected, this, &MainWindow::onSocketConnected);
+    connect(socket, &QTcpSocket::disconnected, this, &MainWindow::onSocketDisconnected);
+    connect(socket, &QTcpSocket::readyRead, this, &MainWindow::onSocketReadyRead);
+    connect(socket, &QTcpSocket::errorOccurred, this, &MainWindow::onSocketError);
 
-    for (int i = 0; i < 5; i++){
+    socket ->connectToHost(QHostAddress::LocalHost, 5555);
+
+    for (int i = 0; i < STOCK_COUNT; i++){
         stocks[i] = 0;
         prices[i] = 10 + 10*i;
 
@@ -51,15 +60,133 @@ MainWindow::MainWindow(QWidget *parent)
     }
     ui->Money->setText("Деньги: "+QString::number(money)+"$");
 
-    timerPrices = new QTimer();
-    timerPrices->setInterval(10000);
+    timerPrices = new QTimer(this);
+    timerPrices->setInterval(1000);
     connect(timerPrices, &QTimer::timeout, this, &MainWindow::on_timerPrices_tick);
     timerPrices->start();
 }
 
 MainWindow::~MainWindow()
 {
+    if (socket->isOpen()){
+        socket->disconnectFromHost();
+        socket->waitForDisconnected(1000);
+    }
     delete ui;
+}
+
+void MainWindow::sendJson(const QJsonObject &obj){
+    if (socket->state() != QTcpSocket::ConnectedState) {
+        QMessageBox::warning(this, "Нет соединения", "Не удалось отправить команду: нет связи с сервером");
+        return;
+    }
+    QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact) + "\n";
+    socket->write(data);
+}
+
+void MainWindow::requestStatus(){
+    QJsonObject cmd;
+    cmd["type"] = "getStatus";
+    sendJson(cmd);
+}
+
+void MainWindow::parseMessage(const QByteArray &line){
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(line, &err);
+    if(err.error != QJsonParseError::NoError){
+        qDebug()<<"JSON parse error: " << err.errorString();
+        return;
+    }
+    QJsonObject obj = doc.object();
+
+    QString type = obj["type"].toString();
+    if (type == "welcome"){
+        qDebug() << "Welcome: " << obj["message"].toString();
+        requestStatus();
+    }
+    else if (type == "statusResponse"){
+        money = obj["money"].toInt();
+        QJsonArray pricesArr = obj["price"].toArray();
+        QJsonArray stocksArr = obj["stocks"].toArray();
+
+        for (int i = 0; i < STOCK_COUNT && i < pricesArr.size(); i++){
+            prices[i] = pricesArr[i].toInt();
+            stocks[i] = stocksArr[i].toInt();
+            sellSliders[i]->setMaximum(stocks[i]);
+        }
+    }
+    else if (type == "priceUpdate"){
+        QJsonArray pricesArr = obj["prices"].toArray();
+        for (int i = 0; i< STOCK_COUNT && i < pricesArr.size(); i++){
+            prices[i] = pricesArr[i].toInt();
+        }
+        for(int i = 0; i< STOCK_COUNT; i++){
+            buyLabel[i]->setText(QString::number(prices[i] * buySliders[i]->value()) + "$");
+            sellLabel[i]->setText(QString::number(prices[i] * sellSliders[i]->value()) + "$");
+        }
+    }
+    else if (type == "buyResult"){
+        if (obj["success"].toBool()){
+            money = obj["money"].toInt();
+            ui->Money->setText("Деньги: " + QString::number(money) + "$");
+            requestStatus();
+        } else {
+            QMessageBox::warning(this, "Ошибка покупки", obj["error"].toString());
+        }
+    }
+    else if (type == "sellResult"){
+        if (obj["success"].toBool()){
+            money = obj["money"].toInt();
+            ui->Money->setText("Деньги: " + QString::number(money) + "$");
+            requestStatus();
+        } else {
+            QMessageBox::warning(this, "Ошибка продажи", obj["error"].toString());
+        }
+    }
+    else if (type == "error"){
+        QMessageBox::critical(this, "Ошибка сервера", obj["message"].toString());
+    }
+}
+
+void MainWindow::updateUIFromServer(int money, const QVector<int> &prices, const QVector<int> &stocks){
+    ui->Money->setText("Деньги: "+QString::number(money)+"$");
+    for (int i=0; i<STOCK_COUNT; i++){
+        sellSliders[i]->setMaximum(stocks[i]);
+        sellSliders[i]->setValue(0);
+        buyLabel[i]->setText(QString::number(prices[i]*buySliders[i]->value())+"$");
+        sellLabel[i]->setText(QString::number(prices[i]*sellSliders[i]->value())+"$");
+    }
+}
+
+void MainWindow::onSocketConnected(){
+
+}
+
+void MainWindow::onSocketDisconnected(){
+    for (int i = 0; i < STOCK_COUNT; i ++ ){
+        buySliders[i]->setEnabled(false);
+        sellSliders[i]->setEnabled(false);
+    }
+    ui->BuyButton->setEnabled(false);
+    ui->SellButton->setEnabled(false);
+}
+
+void MainWindow::onSocketReadyRead(){
+    socketBuffer.append(socket->readAll());
+
+    while(socketBuffer.contains('\n')){
+        int pos = socketBuffer.indexOf('\n');
+        QByteArray line = socketBuffer.left(pos).trimmed();
+        socketBuffer = socketBuffer.mid(pos + 1);
+
+        if (line.isEmpty()) continue;
+        parseMessage(line);
+    }
+}
+
+void MainWindow :: onSocketError(QAbstractSocket::SocketError error){
+    Q_UNUSED(error);
+    qDebug() << "Socket error:" << socket->errorString();
 }
 
 void MainWindow::on_AnyBuySlider_change(int index, int value)
@@ -73,12 +200,7 @@ void MainWindow::on_AnySellSlider_change(int index, int value)
 }
 
 void MainWindow::on_timerPrices_tick(){
-    for (int i=0; i<5; i++){
-        if (rand()%2 == 1){
-            prices[i] += 1 + rand()%10;
-        }else{
-            prices[i] -= 1 + rand()%10;
-        }
+    for (int i=0; i<STOCK_COUNT; i++){
         buyLabel[i]->setText(QString::number(prices[i]*buySliders[i]->value())+"$");
         sellLabel[i]->setText(QString::number(prices[i]*sellSliders[i]->value())+"$");
     }
@@ -86,32 +208,44 @@ void MainWindow::on_timerPrices_tick(){
 
 void MainWindow::on_BuyButton_clicked()
 {
-    int cost = 0;
-    for (int i = 0; i<5; i++){
-        cost += prices[i] * buySliders[i]->value();
+    QVector<int> amounts(STOCK_COUNT);
+    for (int i = 0; i< STOCK_COUNT; i ++ ){
+        amounts[i] = buySliders[i]->value();
     }
-    if (cost <= money){
-        money -= cost;
-        for (int i=0; i< 5; i++){
-            stocks[i] += buySliders[i]->value();
-            sellSliders[i]->setMaximum(stocks[i]);
-        }
-        ui->Money->setText("Деньги: "+QString::number(money)+"$");
+
+    QJsonObject cmd;
+    cmd["type"] = "buy";
+    QJsonArray arr;
+    for (int v : amounts ) arr.append(v);
+    cmd["amounts"] = arr;
+
+    sendJson(cmd);
+
+    for(int i = 0; i < STOCK_COUNT; i++){
+        buySliders[i]->setValue(0);
+        buyLabel[i]->setText("0$");
     }
 }
 
 
 void MainWindow::on_SellButton_clicked()
 {
-    int cost = 0;
-    for (int i = 0; i<5; i++){
-        cost += prices[i] * sellSliders[i]->value();
+    QVector<int> amounts(STOCK_COUNT);
+    for (int i = 0; i< STOCK_COUNT; i ++ ){
+        amounts[i] = sellSliders[i]->value();
     }
-    money += cost;
-    for (int i=0; i< 5; i++){
-        stocks[i] -= sellSliders[i]->value();
-        sellSliders[i]->setMaximum(stocks[i]);
+
+    QJsonObject cmd;
+    cmd["type"] = "sell";
+    QJsonArray arr;
+    for (int v : amounts ) arr.append(v);
+    cmd["amounts"] = arr;
+
+    sendJson(cmd);
+
+    for(int i = 0; i < STOCK_COUNT; i++){
+        sellSliders[i]->setValue(0);
+        sellLabel[i]->setText("0$");
     }
-    ui->Money->setText("Деньги: "+QString::number(money)+"$");
 }
 
