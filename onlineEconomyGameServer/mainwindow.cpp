@@ -110,6 +110,81 @@ void StocksEngine::onClientDisconnected()
     }
 }
 
+void StocksEngine::processCommand(QTcpSocket *socket, const QJsonObject &cmd)
+{
+    QString type = cmd["type"].toString();
+    QJsonObject response;
+
+    if (type == "getStatus"){
+        QJsonDocument statusDoc = getStatus();
+        response = statusDoc.object();
+        response["type"] = "statusResponse";
+    }
+    else if (type == "sell"){
+        QJsonArray amountsArr = cmd["amounts"].toArray();
+        QVector<int> amounts;
+        for (const auto &val : amountsArr){
+            amounts.append(val.toInt());
+        }
+        if (sellStocks(amounts)){
+            response["type"] = "sellResult";
+            response["success"] = true;
+            response["money"] = money;
+        }else{
+            response["type"] = "sellResult";
+            response["success"] = false;
+            response["error"] = "Not enough stocks";
+        }
+    }else if(type =="buy"){
+        QJsonArray amountsArr = cmd["amounts"].toArray();
+        QVector<int> amounts;
+        for (const auto &val : amountsArr){
+            amounts.append(val.toInt());
+        }
+        if (buyStocks(amounts)){
+            response["type"] = "buyResult";
+            response["success"] = true;
+            response["money"] = money;
+        }else{
+            response["type"] = "buyResult";
+            response["success"] = false;
+            response["error"] = "Not enough money or invalid amounts";
+        }
+    }else{
+        sendError(socket, "Unknown command: " + type);
+        return;
+    }
+    socket->write(QJsonDocument(response).toJson(QJsonDocument::Compact) + "\n");
+}
+
+void StocksEngine::broadcastStatus()
+{
+    QJsonObject update;
+    update["type"] = "priceUpdated";
+
+    QJsonArray priceArray;
+
+    for (int p : prices){
+        priceArray.append(p);
+    }
+    update["prices"] = priceArray;
+
+    QByteArray data = QJsonDocument(update).toJson(QJsonDocument::Compact)+"\n";
+
+    for (QTcpSocket *client : clientBuffers.keys()){
+        if (client && client->state() == QTcpSocket::ConnectedState){
+            client->write(data);
+        }
+    }
+}
+
+void StocksEngine::sendError(QTcpSocket *socket, const QString &msg)
+{
+    QJsonObject error;
+    error["type"] = "error";
+    error["message"] = msg;
+    socket->write(QJsonDocument(error).toJson(QJsonDocument::Compact) + "\n");
+}
 bool StocksEngine::buyStocks(const QVector<int> &amounts)
 {
     if (amounts.size() != STOCK_COUNT) return false;

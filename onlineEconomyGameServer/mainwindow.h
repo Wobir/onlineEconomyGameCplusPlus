@@ -45,7 +45,7 @@ private:
     QMap<QTcpSocket*, QByteArray> clientBuffers;
 
     void processCommand(QTcpSocket *socket, const QJsonObject &cmd);
-    void sendError(QTcpSocket *socket, const String &msg);
+    void sendError(QTcpSocket *socket, const QString &msg);
     void broadcastStatus();
 
 };
