@@ -8,6 +8,8 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , socket (new QTcpSocket(this))
+    , timerPrices(nullptr)
 {
     ui->setupUi(this);
 
@@ -30,7 +32,7 @@ MainWindow::MainWindow(QWidget *parent)
         buySliders[i]->show();
 
         connect(buySliders[i], &QSlider::valueChanged,
-                [this, i](int value) {on_AnyBuySlider_change(i, value);});
+                [this, i](int value) {handleBuySliderChange(i, value);});
 
         sellSliders[i] = new QSlider(Qt::Horizontal, this);
         sellSliders[i]->setParent(ui->groupBox_3);
@@ -42,7 +44,7 @@ MainWindow::MainWindow(QWidget *parent)
         sellSliders[i]->setMaximum(0);
 
         connect(sellSliders[i], &QSlider::valueChanged,
-                [this, i](int value) {on_AnySellSlider_change(i, value);});
+                [this, i](int value) {handleSellSliderChange(i, value);});
 
         buyLabel[i] = new QLabel();
         buyLabel[i]->setParent(ui->groupBox);
@@ -62,7 +64,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     timerPrices = new QTimer(this);
     timerPrices->setInterval(1000);
-    connect(timerPrices, &QTimer::timeout, this, &MainWindow::on_timerPrices_tick);
+    connect(timerPrices, &QTimer::timeout, this, &MainWindow::updatePriceLabels);
     timerPrices->start();
 }
 
@@ -106,23 +108,24 @@ void MainWindow::parseMessage(const QByteArray &line){
     }
     else if (type == "statusResponse"){
         money = obj["money"].toInt();
-        QJsonArray pricesArr = obj["price"].toArray();
+        QJsonArray pricesArr = obj["prices"].toArray(); // ✅ Верный ключ (как в сервере)
         QJsonArray stocksArr = obj["stocks"].toArray();
 
         for (int i = 0; i < STOCK_COUNT && i < pricesArr.size(); i++){
             prices[i] = pricesArr[i].toInt();
             stocks[i] = stocksArr[i].toInt();
-            sellSliders[i]->setMaximum(stocks[i]);
+            sellSliders[i]->setMaximum(stocks[i]); // Теперь слайдеры продаж разблокируются!
         }
-    }
-    else if (type == "priceUpdate"){
-        QJsonArray pricesArr = obj["prices"].toArray();
-        for (int i = 0; i< STOCK_COUNT && i < pricesArr.size(); i++){
-            prices[i] = pricesArr[i].toInt();
-        }
-        for(int i = 0; i< STOCK_COUNT; i++){
+        // Сразу обновляем лейблы, чтобы не ждать таймера
+        for(int i=0; i<STOCK_COUNT; i++){
             buyLabel[i]->setText(QString::number(prices[i] * buySliders[i]->value()) + "$");
             sellLabel[i]->setText(QString::number(prices[i] * sellSliders[i]->value()) + "$");
+        }
+    }
+    else if (type == "priceUpdated"){
+        QJsonArray pricesArr = obj["prices"].toArray();
+        for (int i = 0; i < STOCK_COUNT && i < pricesArr.size(); i++){
+            prices[i] = pricesArr[i].toInt();
         }
     }
     else if (type == "buyResult"){
@@ -189,17 +192,17 @@ void MainWindow :: onSocketError(QAbstractSocket::SocketError error){
     qDebug() << "Socket error:" << socket->errorString();
 }
 
-void MainWindow::on_AnyBuySlider_change(int index, int value)
+void MainWindow::handleBuySliderChange(int index, int value)
 {
     buyLabel[index]->setText(QString::number(prices[index]*value)+"$");
 }
 
-void MainWindow::on_AnySellSlider_change(int index, int value)
+void MainWindow::handleSellSliderChange(int index, int value)
 {
     sellLabel[index]->setText(QString::number(prices[index]*value) + "$");
 }
 
-void MainWindow::on_timerPrices_tick(){
+void MainWindow::updatePriceLabels(){
     for (int i=0; i<STOCK_COUNT; i++){
         buyLabel[i]->setText(QString::number(prices[i]*buySliders[i]->value())+"$");
         sellLabel[i]->setText(QString::number(prices[i]*sellSliders[i]->value())+"$");

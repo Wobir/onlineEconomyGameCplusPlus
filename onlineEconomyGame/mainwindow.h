@@ -31,11 +31,13 @@ public:
     void requestStatus();
 
 private slots:
-    void on_AnyBuySlider_change(int index, int value);
-    void on_AnySellSlider_change(int index, int value);
+
     void on_BuyButton_clicked();
     void on_SellButton_clicked();
-    void on_timerPrices_tick();
+
+    void handleBuySliderChange(int index, int value);
+    void handleSellSliderChange(int index, int value);
+    void updatePriceLabels();
 
     void onSocketConnected();
     void onSocketDisconnected();
